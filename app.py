@@ -1,7 +1,11 @@
-from dotenv import load_dotenv
-load_dotenv()
 
 import os
+# Las variables se leen desde .env solo en local
+if os.path.exists(".env"):
+    for line in open(".env"):
+        if "=" in line and not line.startswith("#"):
+            k, v = line.strip().split("=", 1)
+            os.environ.setdefault(k, v)
 import re
 import requests
 from flask import Flask, request
