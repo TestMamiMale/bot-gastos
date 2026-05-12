@@ -1,20 +1,34 @@
 // ============================================================
-// APPS SCRIPT — Bot de Gastos con fotos batch
+// APPS SCRIPT — Bot Gastos consolidado y corregido
 // ============================================================
 
-var GEMINI_API_KEY = "TU_GEMINI_API_KEY_AQUI";
-var DRIVE_FOLDER_ID = "TU_CARPETA_ID_AQUI"; // carpeta donde guardar fotos
+var GEMINI_API_KEY  = "AIzaSyAo6AYtTeQ2_B5P_-ZHjhc_wqXnOUtcn6s"; 
 
-var SHEET_GASTOS  = "Gastos";
-var SHEET_FOTOS   = "Fotos Pendientes";
+// IDs de Drive
+var CONFIG_SHEET_ID = "1XR3LMN3fYfWM7LHDizUbgJ0AFfnUX9uruRSblwOxc0w";
 
+var PROYECTOS_CONFIG = {
+  "Personal": {
+    carpeta:   "1IjhCG_jjosLt-hD9eKsFXMTmv6nGq02C",
+    imagenes:  "1Zffh2FYq2uRI6gV9Z47b2KV1lwkHHw-a"
+  },
+  "Rendicion_1": {
+    carpeta:   "1yJTZmQI4yol16iHTN-SXcinqjbKyap48",
+    imagenes:  "1uKo6M9hYB8SjhSpn1hD4gNP56sWxu24o"
+  }
+};
+
+// ── Routing ─────────────────────────────────────────────────
 function doPost(e) {
   try {
-    var data   = JSON.parse(e.postData.contents);
-    var action = data.action || "guardar_gasto";
-    if (action === "guardar_foto")     return guardarFoto(data);
-    if (action === "actualizar_batch") return actualizarBatch(data);
-    return guardarGasto(data);
+    var data = JSON.parse(e.postData.contents);
+    var action = data.action;
+
+    if (action === "guardar_foto") return guardarFoto(data);
+    if (action === "guardar_gasto") return guardarGasto(data);
+    if (action === "obtener_config") return jsonResp(getUsuarioConfig(data.telefono));
+
+    return jsonResp({ ok: false, error: "Acción no reconocida: " + action });
   } catch (err) {
     return jsonResp({ ok: false, error: err.toString() });
   }
@@ -22,15 +36,64 @@ function doPost(e) {
 
 function doGet(e) {
   try {
-    return getResumen();
+    var action = (e.parameter && e.parameter.action);
+    if (action === "obtener_config") return jsonResp(getUsuarioConfig(e.parameter.telefono));
+    if (action === "get_resumen") return getResumen(e.parameter.telefono);
+    return jsonResp({ ok: false, error: "Acción GET no reconocida" });
   } catch (err) {
     return jsonResp({ ok: false, error: err.toString() });
   }
 }
 
-// ── Guardar gasto manual ─────────────────────────────────────
+// ── Obtener Configuración (Para que Python no reciba undefined) ──
+function getUsuarioConfig(telefono) {
+  var ss = SpreadsheetApp.openById(CONFIG_SHEET_ID);
+  var ws = ss.getSheetByName("Usuarios");
+  if (!ws) return { ok: false, error: "Hoja Usuarios no encontrada" };
+
+  var rows = ws.getDataRange().getValues();
+  var telBusca = limpiarTel(telefono);
+  var userData = null;
+
+  for (var i = 1; i < rows.length; i++) {
+    var telSheet = limpiarTel(String(rows[i][0]));
+    if (telSheet === telBusca && String(rows[i][2]).toLowerCase() === "activo") {
+      userData = {
+        nombre: rows[i][1],
+        proyectosNombres: String(rows[i][4]).split(",").map(function(p){ return p.trim(); })
+      };
+      break;
+    }
+  }
+
+  if (!userData) return { ok: false, error: "Usuario no autorizado o inactivo" };
+
+  var misProyectos = {};
+  userData.proyectosNombres.forEach(function(pName) {
+    if (PROYECTOS_CONFIG[pName]) {
+      misProyectos[pName] = {
+        folder_id: PROYECTOS_CONFIG[pName].imagenes,
+        sheet_name: "Gastos",
+        carpeta_padre: PROYECTOS_CONFIG[pName].carpeta
+      };
+    }
+  });
+
+  return { ok: true, nombre: userData.nombre, proyectos: misProyectos };
+}
+
+// ── Guardar Gasto ────────────────────────────────────────────
 function guardarGasto(data) {
-  var ws  = getOrCreateSheet(SHEET_GASTOS, headersGastos());
+  var proyecto = data.proyecto; // Recibe 'nombre_proyecto_actual' desde sheets.py
+  var config = PROYECTOS_CONFIG[proyecto];
+  if (!config) return jsonResp({ ok: false, error: "Proyecto no encontrado: " + proyecto });
+
+  var ss = abrirOCrearSheet(config.carpeta, "Gastos " + proyecto);
+  var ws = ss.getSheetByName("Gastos") || ss.getSheets()[0];
+  ws.setName("Gastos");
+
+  if (ws.getLastRow() === 0) crearHeaders(ws);
+
   var now = new Date();
   ws.appendRow([
     formatDate(now), formatTime(now),
@@ -42,187 +105,121 @@ function guardarGasto(data) {
   return jsonResp({ ok: true });
 }
 
-// ── Guardar foto pendiente ────────────────────────────────────
+// ── Guardar Foto ─────────────────────────────────────────────
 function guardarFoto(data) {
-  // 1. Subir imagen a Drive
-  var folder  = DriveApp.getFolderById(DRIVE_FOLDER_ID);
-  var blob    = Utilities.newBlob(
+  var proyecto = data.proyecto;
+  var config = PROYECTOS_CONFIG[proyecto];
+  if (!config) return jsonResp({ ok: false, error: "Proyecto no encontrado: " + proyecto });
+
+  var folder = DriveApp.getFolderById(config.imagenes);
+  var blob = Utilities.newBlob(
     Utilities.base64Decode(data.imagen_b64),
     data.mime_type || "image/jpeg",
     "boleta_" + new Date().getTime() + ".jpg"
   );
   var file = folder.createFile(blob);
   file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-  var fotoUrl = file.getUrl();
 
-  // 2. Agregar fila en Gastos como pendiente
-  var ws  = getOrCreateSheet(SHEET_GASTOS, headersGastos());
+  var ss = abrirOCrearSheet(config.carpeta, "Gastos " + proyecto);
+  var ws = ss.getSheetByName("Gastos") || ss.getSheets()[0];
+  ws.setName("Gastos");
+  if (ws.getLastRow() === 0) crearHeaders(ws);
+
   var now = new Date();
   ws.appendRow([
     formatDate(now), formatTime(now),
     data.quien || "", "⏳ Pendiente análisis",
-    "", "", 0, "", "", "", fotoUrl, "foto_pendiente"
+    "", "", 0, "", "", "", file.getUrl(), "foto_pendiente"
   ]);
-  var rowId = ws.getLastRow();
 
-  // 3. Registrar en hoja Fotos Pendientes
-  var wsFotos = getOrCreateSheet(SHEET_FOTOS, ["Row ID","Quién","Foto URL","Fecha","Estado"]);
-  wsFotos.appendRow([rowId, data.quien || "", fotoUrl, now, "pendiente"]);
+  var ssConfig = SpreadsheetApp.openById(CONFIG_SHEET_ID);
+  var wsFotos = ssConfig.getSheetByName("Fotos Pendientes") || ssConfig.insertSheet("Fotos Pendientes");
+  if (wsFotos.getLastRow() === 0) {
+    wsFotos.appendRow(["Row ID","Proyecto","Sheet ID","Quién","Foto URL","Fecha","Estado"]);
+    wsFotos.getRange(1,1,1,7).setFontWeight("bold").setBackground("#34A853").setFontColor("white");
+  }
+  wsFotos.appendRow([ws.getLastRow(), proyecto, ss.getId(), data.quien || "", file.getUrl(), now, "pendiente"]);
 
-  return jsonResp({ ok: true, row_id: rowId, foto_url: fotoUrl });
+  return jsonResp({ ok: true, foto_url: file.getUrl() });
 }
 
-// ── Obtener resumen para el bot ──────────────────────────────
-function getResumen() {
-  var ws = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_GASTOS);
-  if (!ws || ws.getLastRow() <= 1) return jsonResp({ ok: true, gastos: [], total: 0, fotos_pendientes: 0 });
+// ── Resumen ──────────────────────────────────────────────────
+function getResumen(telefono) {
+  var configResp = getUsuarioConfig(telefono);
+  if (!configResp.ok) return jsonResp({ ok: true, proyectos: {}, fotos_pendientes: 0 });
 
-  var rows   = ws.getDataRange().getValues();
-  var gastos = [];
-  var pendientes = 0;
+  var resultado = {};
+  var totalFotos = 0;
 
-  for (var i = 1; i < rows.length; i++) {
-    var estado = rows[i][11];
-    if (estado === "foto_pendiente") { pendientes++; continue; }
-    gastos.push({
-      fecha:       rows[i][0],
-      quien:       rows[i][2],
-      descripcion: rows[i][3],
-      categoria:   rows[i][4],
-      metodo:      rows[i][5],
-      monto:       rows[i][6]
-    });
-  }
-
-  var total = gastos.reduce(function(s,g){ return s+(Number(g.monto)||0); }, 0);
-  return jsonResp({ ok: true, gastos: gastos, total: total, fotos_pendientes: pendientes });
-}
-
-// ── Procesar fotos con Gemini (desde menú del Sheet) ─────────
-function procesarFotosPendientes() {
-  var ss      = SpreadsheetApp.getActiveSpreadsheet();
-  var wsGastos = ss.getSheetByName(SHEET_GASTOS);
-  var wsFotos  = ss.getSheetByName(SHEET_FOTOS);
-  if (!wsFotos) { SpreadsheetApp.getUi().alert("No hay fotos pendientes."); return; }
-
-  var filasFotos = wsFotos.getDataRange().getValues();
-  var pendientes = [];
-  for (var i = 1; i < filasFotos.length; i++) {
-    if (filasFotos[i][4] === "pendiente") {
-      pendientes.push({ fila_fotos: i + 1, row_id: filasFotos[i][0], quien: filasFotos[i][1], foto_url: filasFotos[i][2] });
+  Object.keys(configResp.proyectos).forEach(function(proyecto) {
+    var config = PROYECTOS_CONFIG[proyecto];
+    var folder = DriveApp.getFolderById(config.carpeta);
+    var archivos = folder.getFilesByName("Gastos " + proyecto);
+    
+    if (!archivos.hasNext()) {
+      resultado[proyecto] = { total: 0, gastos: [] };
+      return;
     }
-  }
 
-  if (pendientes.length === 0) { SpreadsheetApp.getUi().alert("✅ No hay fotos pendientes."); return; }
-
-  var procesadas = 0;
-  var errores    = 0;
-
-  pendientes.forEach(function(p) {
-    ss.toast("Analizando foto " + (procesadas + errores + 1) + " de " + pendientes.length, "⏳ Gemini...", 15);
-    try {
-      // Descargar imagen desde Drive
-      var fileId  = p.foto_url.match(/[-\w]{25,}/);
-      if (!fileId) throw new Error("No se pudo extraer ID del archivo");
-      var file    = DriveApp.getFileById(fileId[0]);
-      var bytes   = file.getBlob().getBytes();
-      var base64  = Utilities.base64Encode(bytes);
-      var mime    = file.getMimeType();
-
-      var datos = analizarConGemini(base64, mime);
-      var rowId = parseInt(p.row_id);
-
-      // Actualizar fila en Gastos
-      wsGastos.getRange(rowId, 4).setValue(datos.descripcion_productos || datos.empresa || "Sin detalle");
-      wsGastos.getRange(rowId, 5).setValue(datos.categoria_sugerida    || "Otro");
-      wsGastos.getRange(rowId, 6).setValue(datos.metodo_pago           || "");
-      wsGastos.getRange(rowId, 7).setValue(datos.total                 || 0);
-      wsGastos.getRange(rowId, 8).setValue(datos.empresa               || "");
-      wsGastos.getRange(rowId, 9).setValue(datos.rut_emisor            || "");
-      wsGastos.getRange(rowId, 10).setValue(datos.numero_documento     || "");
-      wsGastos.getRange(rowId, 12).setValue("✅ analizado (" + (datos.confianza || 0) + "%)");
-
-      // Marcar como procesado
-      wsFotos.getRange(p.fila_fotos, 5).setValue("procesado");
-      procesadas++;
-    } catch(err) {
-      wsGastos.getRange(parseInt(p.row_id), 12).setValue("❌ error: " + err.toString().substring(0,50));
-      errores++;
+    var ss = SpreadsheetApp.open(archivos.next());
+    var ws = ss.getSheetByName("Gastos");
+    if (!ws || ws.getLastRow() <= 1) {
+      resultado[proyecto] = { total: 0, gastos: [] };
+      return;
     }
-    Utilities.sleep(3000);
+
+    var rows = ws.getDataRange().getValues();
+    var gastos = [];
+    var total = 0;
+
+    for (var j = 1; j < rows.length; j++) {
+      if (rows[j][11] === "foto_pendiente") { totalFotos++; continue; }
+      var monto = Number(rows[j][6]) || 0;
+      total += monto;
+      gastos.push({ fecha: rows[j][0], quien: rows[j][2], descripcion: rows[j][3], monto: monto });
+    }
+    resultado[proyecto] = { total: total, gastos: gastos };
   });
 
-  SpreadsheetApp.getUi().alert(
-    "✅ Proceso completado\n\n" +
-    "✔ Analizadas: " + procesadas + "\n" +
-    "✖ Errores: "    + errores
-  );
+  return jsonResp({ ok: true, proyectos: resultado, fotos_pendientes: totalFotos });
 }
 
-// ── Analizar imagen con Gemini ───────────────────────────────
+// ── Helpers de Drive ─────────────────────────────────────────
+function abrirOCrearSheet(carpetaId, nombre) {
+  var folder = DriveApp.getFolderById(carpetaId);
+  var archivos = folder.getFilesByName(nombre);
+  if (archivos.hasNext()) return SpreadsheetApp.open(archivos.next());
+  
+  var ss = SpreadsheetApp.create(nombre);
+  var file = DriveApp.getFileById(ss.getId());
+  folder.addFile(file);
+  DriveApp.getRootFolder().removeFile(file);
+  return ss;
+}
+
+function crearHeaders(ws) {
+  var headers = ["Fecha","Hora","Quién","Descripción","Categoría","Método","Monto","Empresa","RUT","N° Doc","Foto URL","Estado"];
+  ws.appendRow(headers);
+  ws.getRange(1,1,1,headers.length).setFontWeight("bold").setBackground("#34A853").setFontColor("white");
+  ws.setFrozenRows(1);
+}
+
+// ── Otros Helpers ────────────────────────────────────────────
 function analizarConGemini(base64, mimeType) {
-  var prompt =
-    "Analiza esta boleta o factura chilena. " +
-    "Responde SOLO con JSON válido sin texto adicional ni backticks:\n" +
-    '{"empresa":"","rut_emisor":"","tipo_documento":"boleta|factura|voucher|ticket",' +
-    '"numero_documento":"","fecha":"DD/MM/YYYY","hora":"HH:MM",' +
-    '"descripcion_productos":"","monto_neto":0,"iva":0,"total":0,' +
-    '"metodo_pago":"debito|credito|efectivo|transferencia|prepago|no_visible",' +
-    '"ultimos_4_tarjeta":"","codigo_autorizacion":"",' +
-    '"categoria_sugerida":"Comida|Transporte|Hogar|Salud|Entretenimiento|Ropa|Educacion|Trabajo|Otro",' +
-    '"confianza":0,"notas":""}\n' +
-    "Reglas: total como número sin puntos ni $. Si hay 2 documentos del mismo gasto combínalos. confianza 0-100.";
-
-  var payload = {
-    contents: [{ parts: [
-      { text: prompt },
-      { inline_data: { mime_type: mimeType, data: base64 } }
-    ]}],
-    generationConfig: { temperature: 0.1, maxOutputTokens: 1024 }
-  };
-
-  var url  = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=" + GEMINI_API_KEY;
-  var resp = UrlFetchApp.fetch(url, { method:"post", contentType:"application/json", payload:JSON.stringify(payload), muteHttpExceptions:true });
-
-  if (resp.getResponseCode() === 503) {
-    Utilities.sleep(10000);
-    resp = UrlFetchApp.fetch(url, { method:"post", contentType:"application/json", payload:JSON.stringify(payload), muteHttpExceptions:true });
-  }
-  if (resp.getResponseCode() !== 200) throw new Error("Gemini " + resp.getResponseCode());
-
-  var texto  = JSON.parse(resp.getContentText()).candidates[0].content.parts[0].text;
-  var limpio = texto.trim().replace(/```json/g,"").replace(/```/g,"").replace(/[\u201C\u201D]/g,'"').trim();
-  var match  = limpio.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("JSON inválido");
-  return JSON.parse(match[0]);
+  var prompt = "Analiza esta boleta chilena. Responde SOLO JSON: {\"empresa\":\"\",\"rut_emisor\":\"\",\"total\":0,\"categoria_sugerida\":\"\",\"metodo_pago\":\"\"}";
+  var payload = { contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64 } }] }] };
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + GEMINI_API_KEY;
+  var resp = UrlFetchApp.fetch(url, { method:"post", contentType:"application/json", payload:JSON.stringify(payload) });
+  var texto = JSON.parse(resp.getContentText()).candidates[0].content.parts[0].text;
+  return JSON.parse(texto.replace(/```json/g,"").replace(/```/g,"").trim());
 }
 
-// ── Helpers ──────────────────────────────────────────────────
-function headersGastos() {
-  return ["Fecha","Hora","Quién","Descripción","Categoría","Método de pago","Monto","Empresa","RUT","N° Doc","Foto URL","Estado"];
-}
+function limpiarTel(tel) { return String(tel).replace(/\D/g,"").slice(-9); }
+function formatDate(d) { return Utilities.formatDate(d,"America/Santiago","dd/MM/yyyy"); }
+function formatTime(d) { return Utilities.formatDate(d,"America/Santiago","HH:mm"); }
+function jsonResp(obj) { return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON); }
 
-function getOrCreateSheet(name, headers) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var ws = ss.getSheetByName(name);
-  if (!ws) {
-    ws = ss.insertSheet(name);
-    ws.appendRow(headers);
-    ws.getRange(1,1,1,headers.length).setFontWeight("bold").setBackground("#34A853").setFontColor("white");
-  }
-  return ws;
-}
-
-function formatDate(d) { return Utilities.formatDate(d, "America/Santiago", "dd/MM/yyyy"); }
-function formatTime(d) { return Utilities.formatDate(d, "America/Santiago", "HH:mm"); }
-function jsonResp(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
-}
-
-// ── Menú en el Sheet ─────────────────────────────────────────
 function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu("🤖 Bot Gastos")
-    .addItem("📸 Procesar fotos pendientes", "procesarFotosPendientes")
-    .addToUi();
+  SpreadsheetApp.getUi().createMenu("🤖 Bot Gastos")
+    .addItem("📸 Procesar fotos pendientes", "procesarFotosPendientes").addToUi();
 }

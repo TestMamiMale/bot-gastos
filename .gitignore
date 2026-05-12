@@ -1,5 +1,16 @@
-venv/
+# Archivo de variables de entorno
 .env
+
+# Carpetas de entornos virtuales de Python
+venv/
+*.venv
+env/
+
+# Archivos compilados y caché de Python
 __pycache__/
 *.pyc
+
+# Archivos de configuración de editores y sistema operativo
+.vscode/
+.idea/
 .DS_Store

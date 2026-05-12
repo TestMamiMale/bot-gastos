@@ -4,39 +4,61 @@ from datetime import datetime
 
 APPS_SCRIPT_URL = os.environ.get("APPS_SCRIPT_URL")
 
-def guardar_gasto(gasto: dict):
+def _post(payload: dict, timeout: int = 30) -> dict:
+    """Función helper para enviar datos a Google Apps Script."""
+    r = requests.post(APPS_SCRIPT_URL, json=payload, timeout=timeout)
+    if r.status_code not in (200, 201):
+        raise Exception(f"Error al llamar a Apps Script: {r.status_code}")
+    result = r.json()
+    if not result.get("ok"):
+        raise Exception(result.get("error", "Error desconocido desde Apps Script"))
+    return result
+
+def obtener_config_usuario(telefono: str) -> dict:
+    """Solicita la configuración dinámica al Apps Script"""
+    # Usamos la acción 'obtener_config' que acabamos de crear en el JS
+    result = _post({"action": "obtener_config", "telefono": telefono})
+    return {
+        "nombre":    result.get("nombre", ""),
+        "proyectos": result.get("proyectos", {})
+    }
+
+# sheets.py
+
+def guardar_gasto(gasto: dict, config_proyecto: dict):
+    if not config_proyecto:
+        raise Exception("Configuración de proyecto no encontrada.")
+
     payload = {
         "action":      "guardar_gasto",
+        "proyecto":    config_proyecto.get("nombre_proyecto_actual"), # Clave EXACTA para el JS
         "descripcion": gasto.get("descripcion", ""),
         "categoria":   gasto.get("categoria", ""),
         "metodo":      gasto.get("metodo", ""),
         "monto":       float(gasto.get("monto", 0)),
         "quien":       gasto.get("quien", "")
     }
-    r = requests.post(APPS_SCRIPT_URL, json=payload, timeout=15)
-    if r.status_code not in (200, 201):
-        raise Exception(f"Error al guardar: {r.status_code}")
-    result = r.json()
-    if not result.get("ok"):
-        raise Exception(result.get("error", "Error desconocido"))
+    return _post(payload, timeout=15)
 
-def guardar_foto_pendiente(data: dict):
+def guardar_foto_pendiente(data: dict, config_proyecto: dict):
+    if not config_proyecto:
+        raise Exception("Sesión de proyecto perdida. Escribe *hola*.")
+
     payload = {
-        "action":      "guardar_foto",
-        "quien":       data.get("quien", ""),
-        "imagen_b64":  data.get("imagen_b64", ""),
-        "mime_type":   data.get("mime_type", "image/jpeg")
+        "action":     "guardar_foto",
+        "proyecto":   data.get("proyecto_nombre"), # Clave vinculada al PROYECTOS_CONFIG del JS 
+        "quien":      data.get("quien", ""),
+        "imagen_b64": data.get("imagen_b64", ""),
+        "mime_type":  data.get("mime_type", "image/jpeg")
     }
-    r = requests.post(APPS_SCRIPT_URL, json=payload, timeout=30)
-    if r.status_code not in (200, 201):
-        raise Exception(f"Error al guardar foto: {r.status_code}")
-    result = r.json()
-    if not result.get("ok"):
-        raise Exception(result.get("error", "Error desconocido"))
+    return _post(payload, timeout=30)
 
-def obtener_resumen() -> str:
+def obtener_resumen(sheet_name: str) -> str:
     try:
-        r = requests.get(APPS_SCRIPT_URL, timeout=15)
+        r = requests.get(
+            APPS_SCRIPT_URL,
+            params={"action": "get_resumen", "sheet_name": sheet_name},
+            timeout=15)
         data = r.json()
     except Exception as e:
         return f"❌ No pude obtener el resumen: {str(e)}"

@@ -1,0 +1,43 @@
+{
+    "whatsapp:+56945669630": {
+        "step": "menu",
+        "nombre": "Yanka",
+        "proyectos": {
+            "Personal": {
+                "folder_id": "1Zffh2FYq2uRI6gV9Z47b2KV1lwkHHw-a",
+                "sheet_name": "Gastos",
+                "carpeta_padre": "1IjhCG_jjosLt-hD9eKsFXMTmv6nGq02C"
+            }
+        },
+        "config_proyecto": {
+            "folder_id": "1Zffh2FYq2uRI6gV9Z47b2KV1lwkHHw-a",
+            "sheet_name": "Gastos",
+            "carpeta_padre": "1IjhCG_jjosLt-hD9eKsFXMTmv6nGq02C",
+            "nombre_proyecto_actual": "Personal"
+        },
+        "nombre_proyecto_actual": "Personal",
+        "gasto": {}
+    },
+    "whatsapp:+56999990691": {
+        "step": "menu",
+        "nombre": "Elias",
+        "proyectos": {
+            "Personal": {
+                "folder_id": "1Zffh2FYq2uRI6gV9Z47b2KV1lwkHHw-a",
+                "sheet_name": "Gastos",
+                "carpeta_padre": "1IjhCG_jjosLt-hD9eKsFXMTmv6nGq02C"
+            },
+            "Rendicion_1": {
+                "folder_id": "1uKo6M9hYB8SjhSpn1hD4gNP56sWxu24o",
+                "sheet_name": "Gastos",
+                "carpeta_padre": "1yJTZmQI4yol16iHTN-SXcinqjbKyap48"
+            }
+        },
+        "config_proyecto": {
+            "folder_id": "1Zffh2FYq2uRI6gV9Z47b2KV1lwkHHw-a",
+            "sheet_name": "Gastos",
+            "carpeta_padre": "1IjhCG_jjosLt-hD9eKsFXMTmv6nGq02C"
+        },
+        "nombre_proyecto_actual": "Personal"
+    }
+}

@@ -1,16 +1,13 @@
-
 import os
-# Las variables se leen desde .env solo en local
-if os.path.exists(".env"):
-    for line in open(".env"):
-        if "=" in line and not line.startswith("#"):
-            k, v = line.strip().split("=", 1)
-            os.environ.setdefault(k, v)
+from dotenv import load_dotenv
+# Carga las variables de entorno desde .env
+load_dotenv()
+
 import re
 import requests
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-from sheets import guardar_gasto, obtener_resumen, guardar_foto_pendiente
+from sheets import guardar_gasto, obtener_resumen, guardar_foto_pendiente, obtener_config_usuario
 from state import get_state, set_state, clear_state
 
 app = Flask(__name__)
@@ -67,163 +64,171 @@ def webhook():
     resp = MessagingResponse()
     msg  = resp.message()
 
-    state  = get_state(sender)
-    step   = state.get("step", "menu")
-    gasto  = state.get("gasto", {})
-    nombre = state.get("nombre", "")
+    # Recuperar estado completo
+    state           = get_state(sender)
+    step            = state.get("step")
+    nombre          = state.get("nombre")
+    gasto           = state.get("gasto", {})
+    proyectos       = state.get("proyectos", {})
+    config_proyecto = state.get("config_proyecto")
 
-    # Comando global cancelar
-    if msg_lower in ["cancelar", "cancel", "salir"]:
-        set_state(sender, {"step": "menu", "nombre": nombre})
-        msg.body("❌ Operación cancelada.\n\nEscribe *hola* para volver al menú.")
+    # Comando global cancelar o reinicio
+    if msg_lower in ["cancelar", "cancel", "salir", "hola", "inicio", "menu"]:
+        clear_state(sender)
+        step = None 
+        nombre = None
+
+    # ── 1. VALIDACIÓN DE USUARIO Y SELECCIÓN DE PROYECTO ──
+    if not nombre:
+        try:
+            config_usuario = obtener_config_usuario(sender)
+            nombre = config_usuario.get("nombre")
+            proyectos = config_usuario.get("proyectos", {})
+
+            if not proyectos:
+                msg.body("❌ No tienes proyectos asignados. Contacta al administrador.")
+                clear_state(sender)
+                return str(resp)
+
+            lista_proyectos = list(proyectos.keys())
+            if len(lista_proyectos) == 1:
+                nombre_p = lista_proyectos[0]
+                config_p = proyectos[nombre_p]
+                new_state = {
+                    "step": "menu", 
+                    "nombre": nombre, 
+                    "proyectos": proyectos, 
+                    "config_proyecto": config_p,
+                    "nombre_proyecto_actual": nombre_p
+                }
+                set_state(sender, new_state)
+                msg.body(f"¡Hola {nombre}! 👋\nEstás en el proyecto *{nombre_p}*.\n\n1️⃣ *Nuevo gasto*\n2️⃣ *Ver resumen*\n📸 Envía una *foto*")
+            else:
+                set_state(sender, {"step": "elegir_proyecto", "nombre": nombre, "proyectos": proyectos})
+                nombres_p = "\n".join([f"• {p}" for p in lista_proyectos])
+                msg.body(f"¡Hola {nombre}! 👋\n\n¿En qué proyecto quieres trabajar?\n\n{nombres_p}")
+            return str(resp)
+        except Exception as e:
+            clear_state(sender)
+            msg.body(f"❌ Error de acceso: {e}")
+            return str(resp)
+
+    # ── 2. SELECCIÓN DE PROYECTO (Si tiene varios) ──
+    if step == "elegir_proyecto":
+        proyecto_elegido = next((p for p in proyectos if p.lower() == msg_lower), None)
+        if proyecto_elegido:
+            config_p = proyectos[proyecto_elegido]
+            state.update({
+                "step": "menu",
+                "config_proyecto": config_p,
+                "nombre_proyecto_actual": proyecto_elegido
+            })
+            set_state(sender, state)
+            msg.body(f"✅ Proyecto: *{proyecto_elegido}*\n\n1️⃣ *Nuevo gasto*\n2️⃣ *Ver resumen*\n📸 Envía una *foto*")
+        else:
+            nombres_p = "\n".join([f"• {p}" for p in proyectos.keys()])
+            msg.body(f"⚠️ Elige un proyecto de la lista:\n\n{nombres_p}")
         return str(resp)
 
-    # ── PRIMER USO: pedir nombre ──
-    if not nombre and step != "registro_nombre":
-        set_state(sender, {"step": "registro_nombre", "gasto": {}, "nombre": ""})
-        msg.body("👋 ¡Hola! Soy tu asistente de gastos 💰\n\nEs tu primera vez — ¿cuál es tu nombre?")
+    # Verificación de seguridad
+    if not config_proyecto and step != "elegir_proyecto":
+        msg.body("❌ Sesión expirada. Escribe *hola* para empezar de nuevo.")
+        clear_state(sender)
         return str(resp)
 
-    if step == "registro_nombre":
-        nombre = body.strip().title()
-        set_state(sender, {"step": "menu", "nombre": nombre, "gasto": {}})
-        msg.body(
-            f"¡Perfecto, {nombre}! Ya te registré 🙌\n\n"
-            "¿Qué quieres hacer?\n\n"
-            "1️⃣ *Nuevo gasto* (manual)\n"
-            "2️⃣ *Ver resumen*\n"
-            "📸 O envía una *foto de boleta* para registrar automáticamente"
-        )
-        return str(resp)
-
-    # ── FOTO RECIBIDA ──
+    # ── 3. FOTO RECIBIDA ──
     if num_media > 0:
         media_url = request.form.get("MediaUrl0", "")
+        nombre_p_actual = state.get("nombre_proyecto_actual") 
+        msg.body(f"📸 Procesando foto para el proyecto: *{nombre_p_actual}*...")
         try:
-            msg.body(f"📸 Recibí tu boleta, {nombre}. Guardando como pendiente de análisis...")
             img_b64, mime = descargar_imagen(media_url)
             guardar_foto_pendiente({
-                "quien":      nombre,
-                "imagen_b64": img_b64,
-                "mime_type":  mime
-            })
-            set_state(sender, {"step": "menu", "nombre": nombre, "gasto": {}})
-            msg.body(
-                f"✅ Foto guardada, {nombre}.\n\n"
-                "La boleta quedó en la pestaña *Fotos Pendientes* del Sheet.\n"
-                "Cuando quieras analizarla escribe *procesar fotos*.\n\n"
-                "¿Qué más quieres hacer?\n"
-                "1️⃣ *Nuevo gasto* (manual)\n"
-                "2️⃣ *Ver resumen*"
-            )
+                "quien":           nombre,
+                "proyecto_nombre": nombre_p_actual,
+                "imagen_b64":      img_b64,
+                "mime_type":       mime
+            }, config_proyecto)
+            msg.body(f"✅ ¡Foto guardada en *{nombre_p_actual}*!\n\nEscribe *1* para un gasto manual o envía otra foto.")
         except Exception as e:
-            msg.body(f"❌ Error al guardar la foto: {str(e)}\n\nIntenta de nuevo.")
+            msg.body(f"❌ Error al guardar la foto: {str(e)}")
         return str(resp)
 
-    # ── MENÚ PRINCIPAL ──
+    # ── 4. MENÚ PRINCIPAL ──
     if step == "menu":
-        if msg_lower in ["hola","hola!","hi","buenas","menu","menú","inicio","1","nuevo gasto","nuevo"]:
-            set_state(sender, {"step": "descripcion", "gasto": {}, "nombre": nombre})
-            msg.body(
-                f"✏️ *Nuevo gasto* — {nombre}\n\n"
-                "¿En qué gastaste? Escribe una descripción breve.\n\n"
-                "_Ej: Almuerzo, Uber, Supermercado_"
-            )
-        elif msg_lower in ["2","resumen","ver resumen","mis gastos","gastos"]:
-            msg.body(obtener_resumen())
-        elif msg_lower in ["procesar fotos","procesar","analizar fotos","analizar"]:
-            msg.body(
-                "⚙️ Para analizar las fotos pendientes con IA:\n\n"
-                "1. Abre tu Google Sheet\n"
-                "2. Menú *🧾 Boletas* → *▶️ Procesar fotos pendientes*\n\n"
-                "El script analiza cada foto con Gemini y completa los datos automáticamente."
-            )
+        if msg_lower in ["1", "nuevo", "gasto"]:
+            state["step"] = "descripcion"
+            state["gasto"] = {}
+            set_state(sender, state)
+            msg.body("📝 ¿En qué gastaste? (Ej: Almuerzo)")
+        elif msg_lower in ["2", "resumen"]:
+            msg.body(obtener_resumen(config_proyecto["sheet_name"]))
+        elif "procesar" in msg_lower:
+            msg.body("⚙️ Ve a tu Google Sheet\nMenú *🧾 Boletas* → *Procesar fotos*")
         else:
-            msg.body(
-                f"Hola {nombre} 👋\n\n"
-                "¿Qué quieres hacer?\n\n"
-                "1️⃣ *Nuevo gasto* (manual)\n"
-                "2️⃣ *Ver resumen*\n"
-                "📸 Envía una *foto de boleta* para registrar automáticamente"
-            )
+            msg.body(f"📁 Proyecto: *{state.get('nombre_proyecto_actual')}*\n\n1️⃣ Nuevo gasto\n2️⃣ Resumen\n📸 Envía una foto")
         return str(resp)
 
-    # ── PASO 1: DESCRIPCIÓN ──
+    # ── 5. FLUJO GASTO MANUAL ──
     if step == "descripcion":
-        if len(body) < 2:
-            msg.body("Por favor escribe una descripción más detallada 📝")
-            return str(resp)
         gasto["descripcion"] = body
-        set_state(sender, {"step": "categoria", "gasto": gasto, "nombre": nombre})
-        msg.body("🏷️ *Categoría*\n\n¿Qué tipo de gasto es?\n\n" + "\n".join(CATEGORIAS) + "\n\n_Escribe el número o el nombre_")
+        state.update({"step": "categoria", "gasto": gasto})
+        set_state(sender, state)
+        msg.body("🏷️ *Categoría*\n\n" + "\n".join(CATEGORIAS))
         return str(resp)
 
-    # ── PASO 2: CATEGORÍA ──
     if step == "categoria":
-        key = msg_lower.replace(".", "").strip()
-        categoria = MAP_CATEGORIA.get(key)
-        if not categoria:
-            msg.body("⚠️ No reconocí esa categoría. Elige una:\n\n" + "\n".join(CATEGORIAS))
+        cat = MAP_CATEGORIA.get(msg_lower.replace(".", ""))
+        if not cat:
+            msg.body("⚠️ Elige una categoría válida (1-9)")
             return str(resp)
-        gasto["categoria"] = categoria
-        set_state(sender, {"step": "metodo", "gasto": gasto, "nombre": nombre})
-        msg.body("💳 *Método de pago*\n\n¿Con qué pagaste?\n\n" + "\n".join(METODOS) + "\n\n_Escribe el número o el nombre_")
+        gasto["categoria"] = cat
+        state.update({"step": "metodo", "gasto": gasto})
+        set_state(sender, state)
+        msg.body("💳 *Método*\n\n" + "\n".join(METODOS))
         return str(resp)
 
-    # ── PASO 3: MÉTODO ──
     if step == "metodo":
-        key = msg_lower.replace(".", "").strip()
-        metodo = MAP_METODO.get(key)
-        if not metodo:
-            msg.body("⚠️ No reconocí ese método. Elige uno:\n\n" + "\n".join(METODOS))
+        met = MAP_METODO.get(msg_lower.replace(".", ""))
+        if not met:
+            msg.body("⚠️ Elige un método válido (1-4)")
             return str(resp)
-        gasto["metodo"] = metodo
-        set_state(sender, {"step": "monto", "gasto": gasto, "nombre": nombre})
-        msg.body("💰 *Monto*\n\n¿Cuánto fue?\n\n_Ej: 5000_")
+        gasto["metodo"] = met
+        state.update({"step": "monto", "gasto": gasto})
+        set_state(sender, state)
+        msg.body("💰 ¿Cuánto fue? (Ej: 5000)")
         return str(resp)
 
-    # ── PASO 4: MONTO ──
     if step == "monto":
         monto_str = re.sub(r"[^\d.]", "", body)
         try:
             monto = float(monto_str)
-            if monto <= 0: raise ValueError
-        except ValueError:
-            msg.body("⚠️ Ingresa un monto válido.\n\n_Ej: 5000_")
-            return str(resp)
+            gasto["monto"] = monto
+            gasto["quien"] = nombre
+            
+            # Recuperar el estado fresco para asegurar persistencia
+            state = get_state(sender) 
+            config_proyecto = state.get("config_proyecto")
+            nombre_p = state.get("nombre_proyecto_actual")
 
-        gasto["monto"] = monto
-        gasto["quien"] = nombre
-        try:
-            guardar_gasto(gasto)
+            if not nombre_p or not config_proyecto:
+                msg.body("❌ Sesión expirada. Escribe *hola* para reiniciar.")
+                return str(resp)
+
+            # Inyectar el nombre para que sheets.py lo use como 'proyecto'
+            config_proyecto["nombre_proyecto_actual"] = nombre_p 
+
+            guardar_gasto(gasto, config_proyecto)
+            
+            # Limpieza y retorno al menú
+            state.update({"step": "menu", "gasto": {}})
+            set_state(sender, state)
+            msg.body(f"✅ *Gasto guardado en {nombre_p}*\n\n📝 {gasto['descripcion']}\n💰 {fmt(monto)}")
         except Exception as e:
-            msg.body(f"❌ Error al guardar: {str(e)}\n\nIntenta de nuevo.")
-            set_state(sender, {"step": "menu", "nombre": nombre})
-            return str(resp)
-
-        set_state(sender, {"step": "menu", "nombre": nombre})
-        msg.body(
-            f"✅ *¡Gasto registrado, {nombre}!*\n\n"
-            f"📝 {gasto['descripcion']}\n"
-            f"🏷️ {gasto['categoria']}\n"
-            f"💳 {gasto['metodo']}\n"
-            f"💰 {fmt(monto)}\n\n"
-            "¿Qué más quieres hacer?\n\n"
-            "1️⃣ *Nuevo gasto*\n"
-            "2️⃣ *Ver resumen*\n"
-            "📸 O envía una *foto de boleta*"
-        )
+            msg.body(f"❌ Error al guardar: {str(e)}\n\nEscribe *hola* para reiniciar.")
         return str(resp)
 
-    # Fallback
-    set_state(sender, {"step": "menu", "nombre": nombre})
-    msg.body("No entendí eso 🤔\n\nEscribe *hola* para ver el menú.")
     return str(resp)
 
-@app.route("/", methods=["GET"])
-def health():
-    return "Bot de gastos activo ✅", 200
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
