@@ -53,65 +53,21 @@ def guardar_foto_pendiente(data: dict, config_proyecto: dict):
     }
     return _post(payload, timeout=30)
 
-def obtener_resumen(sheet_name: str) -> str:
+def obtener_resumen(telefono: str) -> str:
+    """Solicita el resumen procesado directamente a Google Apps Script"""
     try:
+        # IMPORTANTE: Cambiamos 'sheet_name' por 'telefono' para que Google sepa quién eres 
         r = requests.get(
             APPS_SCRIPT_URL,
-            params={"action": "get_resumen", "sheet_name": sheet_name},
-            timeout=15)
+            params={"action": "get_resumen", "telefono": telefono},
+            timeout=20) 
         data = r.json()
+        
+        if data.get("ok"):
+            # Google Apps Script ya entrega el texto armado en el campo 'resumen' 
+            return data.get("resumen")
+        else:
+            return f"❌ Error: {data.get('error', 'No se pudo obtener el resumen')}"
+            
     except Exception as e:
-        return f"❌ No pude obtener el resumen: {str(e)}"
-
-    gastos = data.get("gastos", [])
-    if not gastos:
-        return (
-            "📊 *Resumen de gastos*\n\n"
-            "Aún no hay gastos registrados.\n\n"
-            "Escribe *1* para registrar el primero 💪"
-        )
-
-    total     = data.get("total", 0)
-    total_mes = 0
-    count_mes = 0
-    cats      = {}
-    personas  = {}
-    mes_actual = datetime.now().strftime("%m/%Y")
-
-    for g in gastos:
-        monto = float(g.get("monto") or 0)
-        quien = g.get("quien", "Desconocido")
-        cat   = g.get("categoria", "Otro")
-        cats[cat]     = cats.get(cat, 0) + monto
-        personas[quien] = personas.get(quien, 0) + monto
-        fecha = str(g.get("fecha", ""))
-        if fecha.endswith(mes_actual):
-            total_mes += monto
-            count_mes += 1
-
-    cats_sorted     = sorted(cats.items(), key=lambda x: x[1], reverse=True)
-    personas_sorted = sorted(personas.items(), key=lambda x: x[1], reverse=True)
-
-    lineas_cats = [
-        f"{cat}: ${int(m):,} ({m/total*100:.0f}%)".replace(",", ".")
-        for cat, m in cats_sorted
-    ]
-    lineas_personas = [
-        f"👤 {q}: ${int(m):,} ({m/total*100:.0f}%)".replace(",", ".")
-        for q, m in personas_sorted
-    ]
-
-    pendientes = data.get("fotos_pendientes", 0)
-    aviso_fotos = f"\n\n⏳ *{pendientes} foto(s) pendiente(s) de analizar*\nEscribe *procesar fotos* para analizarlas." if pendientes > 0 else ""
-
-    return (
-        f"📊 *Resumen de gastos*\n\n"
-        f"📅 Este mes: *${int(total_mes):,}* ({count_mes} gastos)\n"
-        f"📁 Total histórico: *${int(total):,}* ({len(gastos)} gastos)\n\n"
-        f"*Por persona:*\n" +
-        "\n".join(f"  {l}" for l in lineas_personas) +
-        "\n\n*Por categoría:*\n" +
-        "\n".join(f"  • {l}" for l in lineas_cats) +
-        aviso_fotos +
-        "\n\n_Escribe *1* para registrar otro gasto_"
-    ).replace(",", ".")
+        return f"❌ No pude conectar con el servidor: {str(e)}"
