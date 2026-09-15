@@ -162,7 +162,7 @@ def webhook():
             set_state(sender, state)
             msg.body("📝 ¿En qué gastaste? (Ej: Almuerzo)")
         elif msg_lower in ["2", "resumen"]:
-            msg.body(obtener_resumen(config_proyecto["sheet_name"]))
+            msg.body(obtener_resumen(sender))
         elif "procesar" in msg_lower:
             msg.body("⚙️ Ve a tu Google Sheet\nMenú *🧾 Boletas* → *Procesar fotos*")
         else:
