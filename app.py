@@ -54,8 +54,11 @@ def descargar_imagen(url):
     import base64
     return base64.b64encode(r.content).decode("utf-8"), content_type
 
-@app.route("/webhook", methods=["POST"])
+@app.route("/webhook", methods=["GET", "POST"])
 def webhook():
+    # Agrega esta validación al inicio de la función:
+    if request.method == "GET":
+        return "Bot de Gastos activo 🚀", 200
     sender    = request.form.get("From", "")
     body      = request.form.get("Body", "").strip()
     num_media = int(request.form.get("NumMedia", 0))
