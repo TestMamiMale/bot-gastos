@@ -23,6 +23,7 @@ def cargar_config_categorias():
         with open(json_path, "r", encoding="utf-8") as f:
             return json.load(f)
     # Valores por defecto si no existe el archivo
+    #verificar
     return {
         "categorias": ["1. 🍽️ Comida", "2. 🚌 Transporte", "3. Otro"],
         "metodos": ["1. 💳 Débito", "2. 💵 Efectivo"],
