@@ -36,8 +36,10 @@
         "config_proyecto": {
             "folder_id": "1Zffh2FYq2uRI6gV9Z47b2KV1lwkHHw-a",
             "sheet_name": "Gastos",
-            "carpeta_padre": "1IjhCG_jjosLt-hD9eKsFXMTmv6nGq02C"
+            "carpeta_padre": "1IjhCG_jjosLt-hD9eKsFXMTmv6nGq02C",
+            "nombre_proyecto_actual": "Personal"
         },
-        "nombre_proyecto_actual": "Personal"
+        "nombre_proyecto_actual": "Personal",
+        "gasto": {}
     }
 }

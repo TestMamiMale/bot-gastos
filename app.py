@@ -1,46 +1,40 @@
 import os
-from dotenv import load_dotenv
-# Carga las variables de entorno desde .env
-load_dotenv()
-
 import re
+import json
 import requests
+from dotenv import load_dotenv
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from sheets import guardar_gasto, obtener_resumen, guardar_foto_pendiente, obtener_config_usuario
 from state import get_state, set_state, clear_state
+
+# Carga las variables de entorno desde .env
+load_dotenv()
 
 app = Flask(__name__)
 
 TWILIO_SID   = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 
-CATEGORIAS = [
-    "1. 🍽️ Comida", "2. 🚌 Transporte", "3. 🏠 Hogar",
-    "4. 💊 Salud", "5. 🎮 Entretenimiento", "6. 👕 Ropa",
-    "7. 📚 Educación", "8. 💼 Trabajo", "9. Otro"
-]
-METODOS = [
-    "1. 💳 Débito", "2. 💳 Crédito",
-    "3. 💵 Efectivo", "4. 📱 Transferencia"
-]
-MAP_CATEGORIA = {
-    "1":"🍽️ Comida","comida":"🍽️ Comida",
-    "2":"🚌 Transporte","transporte":"🚌 Transporte",
-    "3":"🏠 Hogar","hogar":"🏠 Hogar",
-    "4":"💊 Salud","salud":"💊 Salud",
-    "5":"🎮 Entretenimiento","entretenimiento":"🎮 Entretenimiento",
-    "6":"👕 Ropa","ropa":"👕 Ropa",
-    "7":"📚 Educación","educación":"📚 Educación","educacion":"📚 Educación",
-    "8":"💼 Trabajo","trabajo":"💼 Trabajo",
-    "9":"Otro","otro":"Otro"
-}
-MAP_METODO = {
-    "1":"💳 Débito","débito":"💳 Débito","debito":"💳 Débito",
-    "2":"💳 Crédito","crédito":"💳 Crédito","credito":"💳 Crédito",
-    "3":"💵 Efectivo","efectivo":"💵 Efectivo",
-    "4":"📱 Transferencia","transferencia":"📱 Transferencia"
-}
+# ── CARGA DE CONFIGURACIÓN EXTERNA (JSON) ──
+def cargar_config_categorias():
+    json_path = os.path.join(os.path.dirname(__file__), "categories.json")
+    if os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    # Valores por defecto si no existe el archivo
+    return {
+        "categorias": ["1. 🍽️ Comida", "2. 🚌 Transporte", "3. Otro"],
+        "metodos": ["1. 💳 Débito", "2. 💵 Efectivo"],
+        "map_categoria": {"1": "🍽️ Comida", "2": "🚌 Transporte", "3": "Otro"},
+        "map_metodo": {"1": "💳 Débito", "2": "💵 Efectivo"}
+    }
+
+CONFIG_EXTERNA = cargar_config_categorias()
+CATEGORIAS    = CONFIG_EXTERNA.get("categorias", [])
+METODOS       = CONFIG_EXTERNA.get("metodos", [])
+MAP_CATEGORIA = CONFIG_EXTERNA.get("map_categoria", {})
+MAP_METODO    = CONFIG_EXTERNA.get("map_metodo", {})
 
 def fmt(monto):
     return f"${int(monto):,}".replace(",", ".")
@@ -56,9 +50,9 @@ def descargar_imagen(url):
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-    # Agrega esta validación al inicio de la función:
     if request.method == "GET":
         return "Bot de Gastos activo 🚀", 200
+
     sender    = request.form.get("From", "")
     body      = request.form.get("Body", "").strip()
     num_media = int(request.form.get("NumMedia", 0))
@@ -116,7 +110,7 @@ def webhook():
             msg.body(f"❌ Error de acceso: {e}")
             return str(resp)
 
-    # ── 2. SELECCIÓN DE PROYECTO (Si tiene varios) ──
+    # ── 2. SELECCIÓN DE PROYECTO ──
     if step == "elegir_proyecto":
         proyecto_elegido = next((p for p in proyectos if p.lower() == msg_lower), None)
         if proyecto_elegido:
@@ -183,7 +177,7 @@ def webhook():
     if step == "categoria":
         cat = MAP_CATEGORIA.get(msg_lower.replace(".", ""))
         if not cat:
-            msg.body("⚠️ Elige una categoría válida (1-9)")
+            msg.body(f"⚠️ Elige una opción válida (1-{len(CATEGORIAS)})")
             return str(resp)
         gasto["categoria"] = cat
         state.update({"step": "metodo", "gasto": gasto})
@@ -194,7 +188,7 @@ def webhook():
     if step == "metodo":
         met = MAP_METODO.get(msg_lower.replace(".", ""))
         if not met:
-            msg.body("⚠️ Elige un método válido (1-4)")
+            msg.body(f"⚠️ Elige una opción válida (1-{len(METODOS)})")
             return str(resp)
         gasto["metodo"] = met
         state.update({"step": "monto", "gasto": gasto})
@@ -209,7 +203,6 @@ def webhook():
             gasto["monto"] = monto
             gasto["quien"] = nombre
             
-            # Recuperar el estado fresco para asegurar persistencia
             state = get_state(sender) 
             config_proyecto = state.get("config_proyecto")
             nombre_p = state.get("nombre_proyecto_actual")
@@ -218,12 +211,10 @@ def webhook():
                 msg.body("❌ Sesión expirada. Escribe *hola* para reiniciar.")
                 return str(resp)
 
-            # Inyectar el nombre para que sheets.py lo use como 'proyecto'
             config_proyecto["nombre_proyecto_actual"] = nombre_p 
 
             guardar_gasto(gasto, config_proyecto)
             
-            # Limpieza y retorno al menú
             state.update({"step": "menu", "gasto": {}})
             set_state(sender, state)
             msg.body(f"✅ *Gasto guardado en {nombre_p}*\n\n📝 {gasto['descripcion']}\n💰 {fmt(monto)}")
