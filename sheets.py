@@ -4,22 +4,24 @@ import requests
 APPS_SCRIPT_URL = os.environ.get("APPS_SCRIPT_URL")
 
 def _post(payload: dict, timeout: int = 30) -> dict:
-    """Helper para enviar peticiones POST a Google Apps Script."""
+    """Helper para enviar peticiones POST a Google Apps Script conservando la acción en la URL."""
     if not APPS_SCRIPT_URL:
         raise Exception("APPS_SCRIPT_URL no está configurada en las variables de entorno.")
-    r = requests.post(APPS_SCRIPT_URL, json=payload, timeout=timeout)
+    
+    action = payload.get("action", "")
+    url = f"{APPS_SCRIPT_URL}?action={action}" if action else APPS_SCRIPT_URL
+    
+    r = requests.post(url, json=payload, timeout=timeout)
     if r.status_code not in (200, 201):
         raise Exception(f"Error al llamar a Apps Script: {r.status_code}")
+    
     result = r.json()
     if not result.get("ok"):
         raise Exception(result.get("error", "Error desconocido desde Apps Script"))
     return result
 
 def obtener_config_usuario(telefono: str) -> dict:
-    """
-    Solicita la configuración del usuario y sus proyectos asociados a Google Apps Script.
-    Apps Script realiza el cruce: Usuario -> Proyectos -> Tipos_Proyecto (Categorías y Métodos).
-    """
+    """Solicita la configuración dinámica del usuario desde Google Apps Script."""
     try:
         r = requests.get(
             APPS_SCRIPT_URL,
@@ -69,7 +71,7 @@ def guardar_foto_pendiente(data: dict, config_proyecto: dict):
     return _post(payload, timeout=30)
 
 def obtener_resumen(telefono: str) -> str:
-    """Solicita el resumen procesado directamente a Google Apps Script"""
+    """Solicita el resumen procesado directamente a Google Apps Script."""
     try:
         r = requests.get(
             APPS_SCRIPT_URL,

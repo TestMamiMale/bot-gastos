@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import requests
 from dotenv import load_dotenv
 from flask import Flask, request
@@ -8,7 +7,6 @@ from twilio.twiml.messaging_response import MessagingResponse
 from sheets import guardar_gasto, obtener_resumen, guardar_foto_pendiente, obtener_config_usuario
 from state import get_state, set_state, clear_state
 
-# Carga las variables de entorno desde .env
 load_dotenv()
 
 app = Flask(__name__)
@@ -16,38 +14,37 @@ app = Flask(__name__)
 TWILIO_SID   = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 
-# ── CARGA DE CONFIGURACIÓN EXTERNA (JSON) ──
-def cargar_config_categorias():
-    json_path = os.path.join(os.path.dirname(__file__), "categories.json")
-    if os.path.exists(json_path):
-        with open(json_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    # Valores por defecto si no existe el archivo
-    #verificar
-    return {
-        "categorias": ["1. 🍽️ Comida", "2. 🚌 Transporte", "3. Otro"],
-        "metodos": ["1. 💳 Débito", "2. 💵 Efectivo"],
-        "map_categoria": {"1": "🍽️ Comida", "2": "🚌 Transporte", "3": "Otro"},
-        "map_metodo": {"1": "💳 Débito", "2": "💵 Efectivo"}
-    }
-
-CONFIG_EXTERNA = cargar_config_categorias()
-CATEGORIAS    = CONFIG_EXTERNA.get("categorias", [])
-METODOS       = CONFIG_EXTERNA.get("metodos", [])
-MAP_CATEGORIA = CONFIG_EXTERNA.get("map_categoria", {})
-MAP_METODO    = CONFIG_EXTERNA.get("map_metodo", {})
-
 def fmt(monto):
     return f"${int(monto):,}".replace(",", ".")
 
 def descargar_imagen(url):
-    """Descarga imagen desde Twilio con autenticación"""
+    """Descarga imagen desde Twilio con autenticación."""
     r = requests.get(url, auth=(TWILIO_SID, TWILIO_TOKEN), timeout=15)
     if r.status_code != 200:
         raise Exception(f"No se pudo descargar la imagen: {r.status_code}")
     content_type = r.headers.get("Content-Type", "image/jpeg").split(";")[0]
     import base64
     return base64.b64encode(r.content).decode("utf-8"), content_type
+
+def obtener_opcion_dinamica(entrada_usuario: str, lista_opciones: list) -> str:
+    """
+    Busca coincidencia entre la opción que escribe el usuario ('1', '1.', '2')
+    y el elemento de la lista (ej: '1. 🍽️ Comida').
+    """
+    num_limpio = entrada_usuario.replace(".", "").strip()
+    
+    # Busca por prefijo "1." o "1 "
+    for opcion in lista_opciones:
+        if opcion.startswith(f"{num_limpio}.") or opcion.startswith(f"{num_limpio} "):
+            return opcion
+            
+    # Si ingresa el número ordinal directo
+    if num_limpio.isdigit():
+        idx = int(num_limpio) - 1
+        if 0 <= idx < len(lista_opciones):
+            return lista_opciones[idx]
+            
+    return None
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
@@ -68,7 +65,7 @@ def webhook():
     nombre          = state.get("nombre")
     gasto           = state.get("gasto", {})
     proyectos       = state.get("proyectos", {})
-    config_proyecto = state.get("config_proyecto")
+    config_proyecto = state.get("config_proyecto", {})
 
     # Comando global cancelar o reinicio
     if msg_lower in ["cancelar", "cancel", "salir", "hola", "inicio", "menu"]:
@@ -76,7 +73,7 @@ def webhook():
         step = None 
         nombre = None
 
-    # ── 1. VALIDACIÓN DE USUARIO Y SELECCIÓN DE PROYECTO ──
+    # 1. VALIDACIÓN DE USUARIO Y SELECCIÓN DE PROYECTO 
     if not nombre:
         try:
             config_usuario = obtener_config_usuario(sender)
@@ -100,7 +97,7 @@ def webhook():
                     "nombre_proyecto_actual": nombre_p
                 }
                 set_state(sender, new_state)
-                msg.body(f"¡Hola {nombre}! 👋\nEstás en el proyecto *{nombre_p}*.\n\n1️⃣ *Nuevo gasto*\n2️⃣ *Ver resumen*\n📸 Envía una *foto*")
+                msg.body(f"¡Hola {nombre}! 👋\nEstás en el proyecto *{nombre_p}*.\n\n1. *Nuevo gasto*\n2. *Ver resumen*\n📸 Envía una foto")
             else:
                 set_state(sender, {"step": "elegir_proyecto", "nombre": nombre, "proyectos": proyectos})
                 nombres_p = "\n".join([f"• {p}" for p in lista_proyectos])
@@ -111,7 +108,7 @@ def webhook():
             msg.body(f"❌ Error de acceso: {e}")
             return str(resp)
 
-    # ── 2. SELECCIÓN DE PROYECTO ──
+    # 2. SELECCIÓN DE PROYECTO 
     if step == "elegir_proyecto":
         proyecto_elegido = next((p for p in proyectos if p.lower() == msg_lower), None)
         if proyecto_elegido:
@@ -122,19 +119,19 @@ def webhook():
                 "nombre_proyecto_actual": proyecto_elegido
             })
             set_state(sender, state)
-            msg.body(f"✅ Proyecto: *{proyecto_elegido}*\n\n1️⃣ *Nuevo gasto*\n2️⃣ *Ver resumen*\n📸 Envía una *foto*")
+            msg.body(f"📌 Proyecto: *{proyecto_elegido}*\n\n1. *Nuevo gasto*\n2. *Ver resumen*\n📸 Envía una foto")
         else:
             nombres_p = "\n".join([f"• {p}" for p in proyectos.keys()])
-            msg.body(f"⚠️ Elige un proyecto de la lista:\n\n{nombres_p}")
+            msg.body(f"❌ Elige un proyecto de la lista:\n\n{nombres_p}")
         return str(resp)
 
     # Verificación de seguridad
     if not config_proyecto and step != "elegir_proyecto":
-        msg.body("❌ Sesión expirada. Escribe *hola* para empezar de nuevo.")
+        msg.body("⚠️ Sesión expirada. Escribe *hola* para empezar de nuevo.")
         clear_state(sender)
         return str(resp)
 
-    # ── 3. FOTO RECIBIDA ──
+    # 3. FOTO RECIBIDA 
     if num_media > 0:
         media_url = request.form.get("MediaUrl0", "")
         nombre_p_actual = state.get("nombre_proyecto_actual") 
@@ -152,49 +149,65 @@ def webhook():
             msg.body(f"❌ Error al guardar la foto: {str(e)}")
         return str(resp)
 
-    # ── 4. MENÚ PRINCIPAL ──
+    # 4. MENÚ PRINCIPAL 
     if step == "menu":
         if msg_lower in ["1", "nuevo", "gasto"]:
             state["step"] = "descripcion"
             state["gasto"] = {}
             set_state(sender, state)
-            msg.body("📝 ¿En qué gastaste? (Ej: Almuerzo)")
+            msg.body("✏️ ¿En qué gastaste? (Ej: Almuerzo de trabajo)")
         elif msg_lower in ["2", "resumen"]:
             msg.body(obtener_resumen(sender))
         elif "procesar" in msg_lower:
-            msg.body("⚙️ Ve a tu Google Sheet\nMenú *🧾 Boletas* → *Procesar fotos*")
+            msg.body("📲 Ve a tu Google Sheet\nMenú *Boletas* ➡️ *Procesar fotos*")
         else:
-            msg.body(f"📁 Proyecto: *{state.get('nombre_proyecto_actual')}*\n\n1️⃣ Nuevo gasto\n2️⃣ Resumen\n📸 Envía una foto")
+            msg.body(f"📌 Proyecto: *{state.get('nombre_proyecto_actual')}*\n\n1. Nuevo gasto\n2. Resumen\n📸 Envía una foto")
         return str(resp)
 
-    # ── 5. FLUJO GASTO MANUAL ──
+    # 5. FLUJO GASTO MANUAL DINÁMICO 
     if step == "descripcion":
         gasto["descripcion"] = body
         state.update({"step": "categoria", "gasto": gasto})
         set_state(sender, state)
-        msg.body("🏷️ *Categoría*\n\n" + "\n".join(CATEGORIAS))
+        
+        categorias = config_proyecto.get("categorias", [])
+        if not categorias:
+            categorias = ["1. 🍽️ Comida", "2. 🚌 Transporte", "3. 📦 Otro"]
+
+        msg.body("🏷️ *Selecciona una categoría:*\n\n" + "\n".join(categorias))
         return str(resp)
 
     if step == "categoria":
-        cat = MAP_CATEGORIA.get(msg_lower.replace(".", ""))
-        if not cat:
-            msg.body(f"⚠️ Elige una opción válida (1-{len(CATEGORIAS)})")
+        categorias = config_proyecto.get("categorias", [])
+        cat_seleccionada = obtener_opcion_dinamica(msg_lower, categorias)
+        
+        if not cat_seleccionada:
+            msg.body(f"❌ Elige una opción válida (1 al {len(categorias)})")
             return str(resp)
-        gasto["categoria"] = cat
+
+        gasto["categoria"] = cat_seleccionada
         state.update({"step": "metodo", "gasto": gasto})
         set_state(sender, state)
-        msg.body("💳 *Método*\n\n" + "\n".join(METODOS))
+
+        metodos = config_proyecto.get("metodos", [])
+        if not metodos:
+            metodos = ["1. 💳 Débito", "2. 💵 Efectivo"]
+
+        msg.body("💳 *Selecciona el método de pago:*\n\n" + "\n".join(metodos))
         return str(resp)
 
     if step == "metodo":
-        met = MAP_METODO.get(msg_lower.replace(".", ""))
-        if not met:
-            msg.body(f"⚠️ Elige una opción válida (1-{len(METODOS)})")
+        metodos = config_proyecto.get("metodos", [])
+        met_seleccionado = obtener_opcion_dinamica(msg_lower, metodos)
+
+        if not met_seleccionado:
+            msg.body(f"❌ Elige una opción válida (1 al {len(metodos)})")
             return str(resp)
-        gasto["metodo"] = met
+
+        gasto["metodo"] = met_seleccionado
         state.update({"step": "monto", "gasto": gasto})
         set_state(sender, state)
-        msg.body("💰 ¿Cuánto fue? (Ej: 5000)")
+        msg.body("💵 ¿Cuánto fue? (Ej: 5000)")
         return str(resp)
 
     if step == "monto":
@@ -204,12 +217,10 @@ def webhook():
             gasto["monto"] = monto
             gasto["quien"] = nombre
             
-            state = get_state(sender) 
-            config_proyecto = state.get("config_proyecto")
             nombre_p = state.get("nombre_proyecto_actual")
 
             if not nombre_p or not config_proyecto:
-                msg.body("❌ Sesión expirada. Escribe *hola* para reiniciar.")
+                msg.body("⚠️ Sesión expirada. Escribe *hola* para reiniciar.")
                 return str(resp)
 
             config_proyecto["nombre_proyecto_actual"] = nombre_p 
@@ -218,7 +229,7 @@ def webhook():
             
             state.update({"step": "menu", "gasto": {}})
             set_state(sender, state)
-            msg.body(f"✅ *Gasto guardado en {nombre_p}*\n\n📝 {gasto['descripcion']}\n💰 {fmt(monto)}")
+            msg.body(f"✅ *Gasto guardado en {nombre_p}*\n\n📝 {gasto['descripcion']}\n🏷️ {gasto['categoria']}\n💳 {gasto['metodo']}\n💰 {fmt(monto)}")
         except Exception as e:
             msg.body(f"❌ Error al guardar: {str(e)}\n\nEscribe *hola* para reiniciar.")
         return str(resp)
