@@ -21,12 +21,12 @@ def _post(payload: dict, timeout: int = 30) -> dict:
     return result
 
 def obtener_config_usuario(telefono: str) -> dict:
-    """Solicita la configuración dinámica del usuario desde Google Apps Script."""
+    """Solicita la configuración dinámica del usuario desde Google Apps Script (Timeout ampliado a 30s)."""
     try:
         r = requests.get(
             APPS_SCRIPT_URL,
             params={"action": "obtener_config", "telefono": telefono},
-            timeout=15
+            timeout=30  # <--- Cambiado de 15 a 30 segundos
         )
         if r.status_code not in (200, 201):
             raise Exception(f"Error de conexión con Apps Script: HTTP {r.status_code}")
@@ -39,6 +39,8 @@ def obtener_config_usuario(telefono: str) -> dict:
             "nombre": data.get("nombre"),
             "proyectos": data.get("proyectos", {})
         }
+    except requests.exceptions.Timeout:
+        raise Exception("Google Sheets tardó demasiado en responder (Timeout). Por favor intenta de nuevo con *hola*.")
     except Exception as e:
         raise Exception(f"Error al obtener configuración de usuario: {str(e)}")
 
@@ -55,7 +57,7 @@ def guardar_gasto(gasto: dict, config_proyecto: dict):
         "monto":       float(gasto.get("monto", 0)),
         "quien":       gasto.get("quien", "")
     }
-    return _post(payload, timeout=15)
+    return _post(payload, timeout=30)  # <--- Cambiado de 15 a 30 segundos
 
 def guardar_foto_pendiente(data: dict, config_proyecto: dict):
     if not config_proyecto:
@@ -76,7 +78,7 @@ def obtener_resumen(telefono: str) -> str:
         r = requests.get(
             APPS_SCRIPT_URL,
             params={"action": "get_resumen", "telefono": telefono},
-            timeout=20
+            timeout=30  # <--- Cambiado de 20 a 30 segundos
         ) 
         data = r.json()
         
