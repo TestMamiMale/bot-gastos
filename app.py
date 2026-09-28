@@ -37,7 +37,7 @@ def enviar_mensaje_meta(to_number: str, texto: str):
         "type": "text",
         "text": {"body": texto}
     }
-    r = requests.post(url, json=payload, headers=headers, timeout=10)
+    r = requests.post(url, json=payload, headers=headers, timeout=40)
     return r.json()
 
 def descargar_imagen_twilio(url):
