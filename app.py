@@ -65,9 +65,25 @@ def descargar_imagen_twilio(url):
     content_type = r.headers.get("Content-Type", "image/jpeg").split(";")[0]
     return base64.b64encode(r.content).decode("utf-8"), content_type
 
+def obtener_modelo_gemini_disponible():
+    """Consulta a Google la lista exacta de modelos habilitados para la API Key."""
+    try:
+        modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        print(f"[GEMINI LIST_MODELS]: Modelos disponibles para tu clave -> {modelos}")
+        
+        # Priorizar modelos tipo 'flash'
+        for m in modelos:
+            if 'flash' in m.lower():
+                return m
+        # Si no hay flash, tomar el primer modelo compatible
+        if modelos:
+            return modelos[0]
+    except Exception as e:
+        print(f"[GEMINI LIST_MODELS ERROR]: {e}")
+    return None
 
 def extraer_gasto_con_gemini(texto_usuario: str, categorias_validas: list, metodos_validos: list) -> dict:
-    """Extrae de una sola pasada los datos del gasto probando modelos compatibles de Gemini."""
+    """Extrae los datos usando detección dinámica de modelo y fallback resiliente."""
     prompt = f"""
     Eres un asistente contable para la rendición de gastos de proyectos.
     Analiza el siguiente texto ingresado por el usuario y extrae la información en formato JSON estricto.
@@ -85,9 +101,21 @@ def extraer_gasto_con_gemini(texto_usuario: str, categorias_validas: list, metod
     Responde ÚNICAMENTE con un objeto JSON con las claves: "monto", "descripcion", "categoria", "metodo".
     """
     
-    # Intenta con distintas variantes de nombres de modelo admitidos por la API
-    modelos_a_probar = ['gemini-1.5-flash', 'models/gemini-1.5-flash', 'gemini-1.5-flash-latest']
+    # Lista de nombres candidatas incluyendo versiones más recientes y específicas
+    modelos_a_probar = [
+        'gemini-2.0-flash',
+        'gemini-2.0-flash-exp',
+        'gemini-1.5-flash-001',
+        'gemini-1.5-flash-002',
+        'gemini-1.5-pro'
+    ]
     
+    # 1. Intentar detectar dinámicamente los modelos permitidos por tu API Key
+    modelo_dinamico = obtener_modelo_gemini_disponible()
+    if modelo_dinamico:
+        modelos_a_probar.insert(0, modelo_dinamico.replace("models/", ""))
+
+    # 2. Probar los modelos hasta que uno responda
     for nombre_modelo in modelos_a_probar:
         try:
             model = genai.GenerativeModel(nombre_modelo)
@@ -95,12 +123,13 @@ def extraer_gasto_con_gemini(texto_usuario: str, categorias_validas: list, metod
                 prompt,
                 generation_config={"response_mime_type": "application/json"}
             )
+            print(f"[GEMINI SUCCESS]: Procesado con éxito usando el modelo '{nombre_modelo}'")
             return json.loads(response.text)
         except Exception as e:
             print(f"[GEMINI TRY {nombre_modelo} ERROR]: {e}")
             continue
 
-    # Fallback por expresiones regulares si falla la llamada a la API
+    # 3. Fallback de emergencia por Regex si la API no está disponible
     print("[GEMINI FALLBACK]: Procesando con extracción básica por Regex")
     monto_match = re.search(r'\$?(\d+[\d\.]*)', texto_usuario)
     monto_val = float(monto_match.group(1).replace(".", "")) if monto_match else 0
