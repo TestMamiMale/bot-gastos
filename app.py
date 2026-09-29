@@ -65,25 +65,29 @@ def descargar_imagen_twilio(url):
     content_type = r.headers.get("Content-Type", "image/jpeg").split(";")[0]
     return base64.b64encode(r.content).decode("utf-8"), content_type
 
-def obtener_modelo_gemini_disponible():
-    """Consulta a Google la lista exacta de modelos habilitados para la API Key."""
-    try:
-        modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        print(f"[GEMINI LIST_MODELS]: Modelos disponibles para tu clave -> {modelos}")
+
+def descargar_imagen_meta(media_id: str):
+    """Obtiene la URL y descarga la imagen enviada por WhatsApp Meta Cloud API."""
+    url_info = f"https://graph.facebook.com/v19.0/{media_id}"
+    headers = {"Authorization": f"Bearer {META_TOKEN}"}
+    
+    res_info = requests.get(url_info, headers=headers, timeout=10)
+    if res_info.status_code != 200:
+        raise Exception(f"Error al obtener URL de imagen de Meta: {res_info.status_code}")
+    
+    media_data = res_info.json()
+    download_url = media_data.get("url")
+    mime_type = media_data.get("mime_type", "image/jpeg").split(";")[0]
+
+    res_img = requests.get(download_url, headers=headers, timeout=15)
+    if res_img.status_code != 200:
+        raise Exception(f"Error al descargar imagen desde Meta: {res_img.status_code}")
         
-        # Priorizar modelos tipo 'flash'
-        for m in modelos:
-            if 'flash' in m.lower():
-                return m
-        # Si no hay flash, tomar el primer modelo compatible
-        if modelos:
-            return modelos[0]
-    except Exception as e:
-        print(f"[GEMINI LIST_MODELS ERROR]: {e}")
-    return None
+    return base64.b64encode(res_img.content).decode("utf-8"), mime_type
+
 
 def extraer_gasto_con_gemini(texto_usuario: str, categorias_validas: list, metodos_validos: list) -> dict:
-    """Extrae los datos usando detección dinámica de modelo y fallback resiliente."""
+    """Extrae de una sola pasada los datos del gasto usando Gemini API."""
     prompt = f"""
     Eres un asistente contable para la rendición de gastos de proyectos.
     Analiza el siguiente texto ingresado por el usuario y extrae la información en formato JSON estricto.
@@ -101,21 +105,8 @@ def extraer_gasto_con_gemini(texto_usuario: str, categorias_validas: list, metod
     Responde ÚNICAMENTE con un objeto JSON con las claves: "monto", "descripcion", "categoria", "metodo".
     """
     
-    # Lista de nombres candidatas incluyendo versiones más recientes y específicas
-    modelos_a_probar = [
-        'gemini-2.0-flash',
-        'gemini-2.0-flash-exp',
-        'gemini-1.5-flash-001',
-        'gemini-1.5-flash-002',
-        'gemini-1.5-pro'
-    ]
+    modelos_a_probar = ['gemini-2.5-flash', 'gemini-1.5-flash']
     
-    # 1. Intentar detectar dinámicamente los modelos permitidos por tu API Key
-    modelo_dinamico = obtener_modelo_gemini_disponible()
-    if modelo_dinamico:
-        modelos_a_probar.insert(0, modelo_dinamico.replace("models/", ""))
-
-    # 2. Probar los modelos hasta que uno responda
     for nombre_modelo in modelos_a_probar:
         try:
             model = genai.GenerativeModel(nombre_modelo)
@@ -123,14 +114,14 @@ def extraer_gasto_con_gemini(texto_usuario: str, categorias_validas: list, metod
                 prompt,
                 generation_config={"response_mime_type": "application/json"}
             )
-            print(f"[GEMINI SUCCESS]: Procesado con éxito usando el modelo '{nombre_modelo}'")
+            print(f"[GEMINI SUCCESS]: Procesado con éxito usando {nombre_modelo}")
             return json.loads(response.text)
         except Exception as e:
-            print(f"[GEMINI TRY {nombre_modelo} ERROR]: {e}")
+            print(f"[GEMINI ERROR {nombre_modelo}]: {e}")
             continue
 
-    # 3. Fallback de emergencia por Regex si la API no está disponible
-    print("[GEMINI FALLBACK]: Procesando con extracción básica por Regex")
+    # Fallback si la API no responde
+    print("[GEMINI FALLBACK]: Extracción por Regex")
     monto_match = re.search(r'\$?(\d+[\d\.]*)', texto_usuario)
     monto_val = float(monto_match.group(1).replace(".", "")) if monto_match else 0
     return {
@@ -144,7 +135,7 @@ def extraer_gasto_con_gemini(texto_usuario: str, categorias_validas: list, metod
 # ==============================================================================
 # LÓGICA DE NEGOCIO PRINCIPAL (Compartida por Meta y Twilio)
 # ==============================================================================
-def procesar_mensaje(sender: str, body: str, num_media: int = 0, media_url: str = None) -> str:
+def procesar_mensaje(sender: str, body: str, media_b64: str = None, mime_type: str = None) -> str:
     """Procesa la conversación y retorna el texto de respuesta del bot."""
     msg_lower = body.lower().strip()
 
@@ -188,7 +179,7 @@ def procesar_mensaje(sender: str, body: str, num_media: int = 0, media_url: str 
                     f"¡Hola {nombre}! 👋\n"
                     f"Estás en el proyecto *{nombre_p}*.\n\n"
                     f"📝 *Para rendir un gasto*, escribe los datos en un solo mensaje:\n"
-                    f"_Ejemplo: Almuerzo con equipo $18.500 con débito_\n\n"
+                    f"_Ejemplo: Almuerzo con equipo $18.500 débito comida_\n\n"
                     f"O responde:\n"
                     f"1. *Ver resumen*\n"
                     f"2. *Cambiar proyecto*"
@@ -215,7 +206,7 @@ def procesar_mensaje(sender: str, body: str, num_media: int = 0, media_url: str 
             return (
                 f"📌 Proyecto seleccionado: *{proyecto_elegido}*\n\n"
                 f"📝 Escribe los datos del gasto en un solo mensaje para procesarlo.\n"
-                f"_Ej: Pasajes de bus $5.000 efectivo_\n\n"
+                f"_Ej: Pasajes de bus $5.000 efectivo transporte_\n\n"
                 f"O responde *1* para Ver Resumen."
             )
         else:
@@ -227,29 +218,39 @@ def procesar_mensaje(sender: str, body: str, num_media: int = 0, media_url: str 
         clear_state(sender)
         return "⚠️ Sesión expirada. Escribe *hola* para empezar de nuevo."
 
-    # 3. PROCESAMIENTO DE FOTO ADJUNTA (Paso final de respaldo)
-    if num_media > 0 and media_url:
+    # 3. PROCESAMIENTO DE FOTO RECIBIDA (Meta o Twilio)
+    if media_b64:
         nombre_p_actual = state.get("nombre_proyecto_actual")
         try:
-            img_b64, mime = descargar_imagen_twilio(media_url)
             guardar_foto_pendiente({
                 "quien":           nombre,
                 "proyecto_nombre": nombre_p_actual,
-                "imagen_b64":      img_b64,
-                "mime_type":       mime
+                "imagen_b64":      media_b64,
+                "mime_type":       mime_type or "image/jpeg"
             }, config_proyecto)
 
-            # Si había un gasto guardado previo en confirmación, finaliza el ciclo
+            # Restablecer estado al menú principal
             state.update({"step": "menu", "gasto": {}})
             set_state(sender, state)
             return f"✅ ¡Foto de respaldo guardada exitosamente en *{nombre_p_actual}*!\n\nPuedes enviar otro gasto en un solo mensaje cuando desees."
         except Exception as e:
             return f"❌ Error al guardar la foto: {str(e)}\nIntenta enviarla nuevamente."
 
-    # 4. PASO DE CONFIRMACIÓN DEL GASTO DETECTADO
+    # 4. PASO DE ESPERA DE FOTO (Maneja el caso si el usuario escribe texto en lugar de enviar foto)
+    if step == "esperando_foto" and not media_b64:
+        if msg_lower in ["omitir", "saltar", "no", "despues", "después"]:
+            state.update({"step": "menu", "gasto": {}})
+            set_state(sender, state)
+            return "👍 Entendido, el gasto quedó registrado sin foto. Escribe tu próximo gasto cuando gustes."
+        else:
+            return (
+                "📸 Aún estoy esperando la **foto de la boleta o factura** para respaldar el gasto anterior.\n\n"
+                "Por favor envíala como imagen o escribe *omitir* para continuar sin foto."
+            )
+
+    # 5. PASO DE CONFIRMACIÓN DEL GASTO DETECTADO
     if step == "esperando_confirmacion":
         if msg_lower in ["si", "sí", "s", "correcto", "ok", "guardar"]:
-            # Registrar el gasto en Google Sheets
             nombre_p = state.get("nombre_proyecto_actual")
             config_proyecto["nombre_proyecto_actual"] = nombre_p
             gasto["quien"] = nombre
@@ -260,7 +261,7 @@ def procesar_mensaje(sender: str, body: str, num_media: int = 0, media_url: str 
                 set_state(sender, state)
                 return (
                     f"✅ *Gasto registrado en {nombre_p}*\n\n"
-                    f"📸 Ahora, por favor envía la **foto de la boleta o factura** para adjuntarla como respaldo del gasto."
+                    f"📸 Ahora, por favor envía la **foto de la boleta o factura** para adjuntarla como respaldo del gasto (o escribe *omitir*)."
                 )
             except Exception as e:
                 return f"❌ Error al guardar en la hoja: {str(e)}\nEscribe *hola* para reiniciar."
@@ -269,7 +270,7 @@ def procesar_mensaje(sender: str, body: str, num_media: int = 0, media_url: str 
             set_state(sender, state)
             return "🔄 Registro cancelado. Ingresa los datos del gasto nuevamente en un solo mensaje."
 
-    # 5. MENÚ O ENTRADA DIRECTA DEL GASTO (ONE-SHOT PARSER)
+    # 6. MENÚ O ENTRADA DIRECTA DEL GASTO (ONE-SHOT PARSER)
     if msg_lower in ["1", "resumen"]:
         return obtener_resumen(sender)
 
@@ -338,11 +339,23 @@ def webhook_meta():
             msg_type = msg_obj.get("type")
 
             body = ""
+            media_b64 = None
+            mime_type = None
+
             if msg_type == "text":
                 body = msg_obj.get("text", {}).get("body", "")
+            elif msg_type == "image":
+                image_info = msg_obj.get("image", {})
+                media_id = image_info.get("id")
+                body = image_info.get("caption", "")
+                if media_id:
+                    try:
+                        media_b64, mime_type = descargar_imagen_meta(media_id)
+                    except Exception as e:
+                        print(f"[META IMAGE DOWNLOAD ERROR]: {e}")
 
-            # Procesa la lógica y responde a través de la API de Meta
-            texto_respuesta = procesar_mensaje(sender, body)
+            # Procesa la lógica y responde
+            texto_respuesta = procesar_mensaje(sender, body, media_b64=media_b64, mime_type=mime_type)
             enviar_mensaje_meta(sender, texto_respuesta)
 
     except Exception as e:
@@ -365,9 +378,17 @@ def webhook_twilio():
     num_media = int(request.form.get("NumMedia", 0))
     media_url = request.form.get("MediaUrl0", "")
 
+    media_b64 = None
+    mime_type = None
+
+    if num_media > 0 and media_url:
+        try:
+            media_b64, mime_type = descargar_imagen_twilio(media_url)
+        except Exception as e:
+            print(f"[TWILIO MEDIA ERROR]: {e}")
+
     resp = MessagingResponse()
-    
-    texto_respuesta = procesar_mensaje(sender, body, num_media, media_url)
+    texto_respuesta = procesar_mensaje(sender, body, media_b64=media_b64, mime_type=mime_type)
     resp.message().body(texto_respuesta)
 
     return str(resp)
