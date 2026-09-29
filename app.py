@@ -67,7 +67,7 @@ def descargar_imagen_twilio(url):
 
 
 def extraer_gasto_con_gemini(texto_usuario: str, categorias_validas: list, metodos_validos: list) -> dict:
-    """Extrae de una sola pasada los datos del gasto usando Gemini API."""
+    """Extrae de una sola pasada los datos del gasto probando modelos compatibles de Gemini."""
     prompt = f"""
     Eres un asistente contable para la rendición de gastos de proyectos.
     Analiza el siguiente texto ingresado por el usuario y extrae la información en formato JSON estricto.
@@ -80,28 +80,36 @@ def extraer_gasto_con_gemini(texto_usuario: str, categorias_validas: list, metod
     1. "monto": número (entero o flotante). Elimina puntos de miles o signos de moneda. Si no se detecta, retorna 0.
     2. "descripcion": breve resumen del gasto realizado.
     3. "categoria": la opción de 'Categorías disponibles' que mejor coincida con el gasto.
-    4. "metodo": el método de pago que mejor coincida de la lista 'Métodos de pago'. Si no se menciona, usa la primera opción o "Débito".
+    4. "metodo": el método de pago que mejor coincida de la lista 'Métodos de pago'. Si no se menciona, usa "Débito".
 
     Responde ÚNICAMENTE con un objeto JSON con las claves: "monto", "descripcion", "categoria", "metodo".
     """
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"}
-        )
-        return json.loads(response.text)
-    except Exception as e:
-        print(f"[GEMINI ERROR]: {e}")
-        # Extracción básica de respaldo en caso de falla de la API
-        monto_match = re.search(r'\$?(\d+[\d\.]*)', texto_usuario)
-        monto_val = float(monto_match.group(1).replace(".", "")) if monto_match else 0
-        return {
-            "monto": monto_val,
-            "descripcion": texto_usuario,
-            "categoria": categorias_validas[0] if categorias_validas else "Gastos Varios",
-            "metodo": metodos_validos[0] if metodos_validos else "Débito"
-        }
+    
+    # Intenta con distintas variantes de nombres de modelo admitidos por la API
+    modelos_a_probar = ['gemini-1.5-flash', 'models/gemini-1.5-flash', 'gemini-1.5-flash-latest']
+    
+    for nombre_modelo in modelos_a_probar:
+        try:
+            model = genai.GenerativeModel(nombre_modelo)
+            response = model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            print(f"[GEMINI TRY {nombre_modelo} ERROR]: {e}")
+            continue
+
+    # Fallback por expresiones regulares si falla la llamada a la API
+    print("[GEMINI FALLBACK]: Procesando con extracción básica por Regex")
+    monto_match = re.search(r'\$?(\d+[\d\.]*)', texto_usuario)
+    monto_val = float(monto_match.group(1).replace(".", "")) if monto_match else 0
+    return {
+        "monto": monto_val,
+        "descripcion": texto_usuario,
+        "categoria": categorias_validas[0] if categorias_validas else "Gastos Varios",
+        "metodo": metodos_validos[0] if metodos_validos else "Débito"
+    }
 
 
 # ==============================================================================
