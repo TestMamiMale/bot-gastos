@@ -270,7 +270,7 @@ def procesar_mensaje(sender: str, body: str, media_b64: str = None, mime_type: s
             set_state(sender, state)
             return "🔄 Registro cancelado. Ingresa los datos del gasto nuevamente en un solo mensaje."
 
-    # 6. MENÚ O ENTRADA DIRECTA DEL GASTO (ONE-SHOT PARSER)
+   # 6. MENÚ O ENTRADA DIRECTA DEL GASTO (ONE-SHOT PARSER)
     if msg_lower in ["1", "resumen"]:
         return obtener_resumen(sender)
 
@@ -279,7 +279,21 @@ def procesar_mensaje(sender: str, body: str, media_b64: str = None, mime_type: s
         nombres_p = "\n".join([f"• {p}" for p in proyectos.keys()])
         return f"¿A qué proyecto deseas cambiarte?\n\n{nombres_p}"
 
-    # Procesar cualquier texto descriptivo como un nuevo gasto usando Gemini
+    # === [FILTRO DE SEGURIDAD PARA AHORRAR TOKENS DE GEMINI] ===
+    # Si el mensaje viene vacío o tiene menos de 2 caracteres (pings/peticiones vacías),
+    # NO llamamos a Gemini y respondemos directo con el menú básico.
+    if not body or len(body.strip()) < 2:
+        return (
+            f"📌 Proyecto actual: *{state.get('nombre_proyecto_actual')}*\n\n"
+            f"📝 *Para rendir un gasto*, escribe el detalle en un solo mensaje:\n"
+            f"_Ej: Almuerzo $15.000 débito_\n\n"
+            f"O responde:\n"
+            f"1. *Ver resumen*\n"
+            f"2. *Cambiar proyecto*"
+        )
+    # ============================================================
+
+    # Procesar cualquier texto descriptivo válido como un nuevo gasto usando Gemini
     categorias = config_proyecto.get("categorias", ["Alimentación", "Transporte", "Operación", "Otros"])
     metodos    = config_proyecto.get("metodos", ["Débito", "Efectivo", "Transferencia", "Factura"])
 
